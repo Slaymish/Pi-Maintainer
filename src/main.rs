@@ -1,7 +1,8 @@
 use std::path::PathBuf;
 use clap::Parser;
 use tokio::signal;
-use tracing_subscriber;
+use tracing_subscriber::prelude::*;
+// Initialize tracing with environment filter for log level configuration
 
 mod config;
 mod scheduler;
@@ -29,7 +30,11 @@ struct Cli {
 async fn main() -> anyhow::Result<()> {
     // 1. Parse CLI & initialize tracing
     let args = Cli::parse();
-    tracing_subscriber::fmt::init();
+    // Configure tracing subscriber with environment filter and fmt layer
+    tracing_subscriber::registry()
+        .with(tracing_subscriber::EnvFilter::from_default_env())
+        .with(tracing_subscriber::fmt::layer())
+        .init();
     tracing::info!(?args, "Starting PiMainteno");
 
     // 2. Load configuration
@@ -52,7 +57,11 @@ async fn main() -> anyhow::Result<()> {
     use tokio::sync::Mutex;
     let scheduler = Arc::new(Mutex::new(
         scheduler::Scheduler::new(
-            cfg.clone(), summarizer.clone(), patch_gen.clone(), data_cache.clone()
+            cfg.clone(),
+            summarizer.clone(),
+            patch_gen.clone(),
+            patch_app.clone(),
+            data_cache.clone(),
         )
     ));
 

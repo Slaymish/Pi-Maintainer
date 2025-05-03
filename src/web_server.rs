@@ -10,7 +10,7 @@ use axum::{
     http::StatusCode,
 };
 use serde::Serialize;
-use serde_json::{self, json};
+use serde_json;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 use std::net::SocketAddr;
@@ -149,6 +149,21 @@ impl WebServer {
                             } else {
                                 html.push_str("<h3>Recent Patch Suggestion</h3>\n<p>None</p>\n");
                             }
+                            // Commit History
+                            let commit_key = format!("scheduler.commit_log.{}", project);
+                            let commit_log: Vec<String> = match cache.get(&commit_key) {
+                                Ok(Some(val)) => serde_json::from_str(&val).unwrap_or_default(),
+                                _ => Vec::new(),
+                            };
+                            if !commit_log.is_empty() {
+                                html.push_str("<h3>Commit History</h3>\n<ul>\n");
+                                for msg in commit_log.iter().rev() {
+                                    html.push_str(&format!("<li>{}</li>\n", html_escape(msg)));
+                                }
+                                html.push_str("</ul>\n");
+                            } else {
+                                html.push_str("<h3>Commit History</h3>\n<p>None</p>\n");
+                            }
                             html.push_str("</div>\n");
                         }
                         // Close container
@@ -259,10 +274,22 @@ impl WebServer {
                 }),
             );
         let addr = SocketAddr::new(self.config.host.parse()?, self.config.port);
-        tracing::info!(address = %addr, "Starting WebServer");
-        axum::Server::bind(&addr)
-            .serve(app.into_make_service())
-            .await?;
+        // Attempt to bind to the configured address and handle errors gracefully
+        match std::net::TcpListener::bind(addr) {
+            Ok(listener) => {
+                // Ensure non-blocking for async server
+                listener.set_nonblocking(true)?;
+                tracing::info!(address = %addr, "Starting WebServer");
+                // Use from_tcp to propagate bind errors instead of panicking
+                axum::Server::from_tcp(listener)?
+                    .serve(app.into_make_service())
+                    .await?;
+            }
+            Err(err) => {
+                tracing::error!(error = %err, address = %addr,
+                    "Failed to bind WebServer; address may be in use. Disabling Web UI");
+            }
+        }
         Ok(())
     }
 }

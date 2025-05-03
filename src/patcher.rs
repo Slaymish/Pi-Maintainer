@@ -29,7 +29,17 @@ impl PatchGenerator {
         }
         Ok(patch)
     }
+    /// Generate a one-sentence commit message summarizing the provided unified diff using the LLM
+    pub async fn commit_message(&self, project: &str, diff: &str) -> Result<String> {
+        tracing::info!(project = project, "Generating commit message");
+        let msg = self.codex.generate_commit_message(project, diff).await?;
+        Ok(msg)
+    }
 }
+
+use std::process::{Command, Stdio};
+use std::io::Write;
+use anyhow::anyhow;
 
 impl PatchApplier {
     pub fn new(cache: DataCache) -> Self {
@@ -41,9 +51,38 @@ impl PatchApplier {
         Ok(())
     }
 
-    pub fn apply(&self, patch: &str) -> Result<()> {
-        tracing::info!(patch = patch, "Applying patch");
-        // Placeholder: apply the patch to the repository
-        Ok(())
+    /// Apply a unified diff patch to the given project directory using `git apply`.
+    /// The patch is provided on stdin to `git apply`.
+    pub fn apply(&self, project: &str, patch: &str) -> Result<()> {
+        tracing::info!(project = project, "Applying patch");
+        // Spawn `git apply` to apply the patch
+        let mut cmd = Command::new("git");
+        let mut child = cmd
+            .arg("apply")
+            .arg("--whitespace=fix")
+            .arg("-")
+            .current_dir(project)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::inherit())
+            .stderr(Stdio::inherit())
+            .spawn()
+            .map_err(|e| anyhow!("Failed to spawn `git apply`: {}", e))?;
+        // Write patch to stdin
+        if let Some(mut stdin) = child.stdin.take() {
+            stdin
+                .write_all(patch.as_bytes())
+                .map_err(|e| anyhow!("Failed to write patch to stdin: {}", e))?;
+        } else {
+            return Err(anyhow!("Failed to open stdin for git apply"));
+        }
+        // Wait for git apply to finish
+        let status = child
+            .wait()
+            .map_err(|e| anyhow!("Failed to wait on git apply: {}", e))?;
+        if status.success() {
+            Ok(())
+        } else {
+            Err(anyhow!("`git apply` failed with status: {}", status))
+        }
     }
 }

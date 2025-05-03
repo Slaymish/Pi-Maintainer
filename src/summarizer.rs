@@ -21,11 +21,11 @@ impl ProjectSummarizer {
         // Compute cache key for project summary based on Git commit hash
         let cache_key = format!("summary_hash:{}", project_path);
         // Attempt to get current Git HEAD hash
-        let git_hash = match tokio::process::Command::new("git")
+        let git_hash = match Command::new("git")
             .arg("rev-parse")
             .arg("HEAD")
             .current_dir(project_path)
-            .stdout(std::process::Stdio::piped())
+            .stdout(Stdio::piped())
             .output()
             .await
         {

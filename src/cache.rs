@@ -1,6 +1,7 @@
 use anyhow::Result;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use tokio::task;
 
 #[derive(Clone)]
 pub struct DataCache {
@@ -9,8 +10,10 @@ pub struct DataCache {
 
 impl DataCache {
     pub async fn new(path: &Path) -> Result<Self> {
-        // Synchronous open; consider spawn_blocking for heavy I/O
-        let db = sled::open(path)?;
+        let path_buf: PathBuf = path.to_path_buf();
+        // Open sled database in a blocking task to avoid blocking the async runtime
+        let db = task::spawn_blocking(move || sled::open(&path_buf))
+            .await??;
         Ok(DataCache { db: Arc::new(db) })
     }
     /// Insert a string value for a given key into the cache.

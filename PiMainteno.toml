@@ -11,8 +11,8 @@ path = "cache"
 enabled = true
 cron = "0 2 * * *"
 projects = [
- "~/Documents/Projects/pi-maintainer/PiMaintaino/PiMainteno",
- "~/Documents/Projects/health_web"
+ "/media/hamish/pi-storage/Projects/Pi-Maintainer",
+ "/media/hamish/pi-storage/Projects/health_web"
 ]
 
 [systemd_monitor]
