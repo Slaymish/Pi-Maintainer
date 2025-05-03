@@ -1,0 +1,24 @@
+# PiMainteno.toml
+[llm]
+provider = "openai"
+api_key = "${OPENAI_API_KEY}"
+model = "gpt-4-codex"
+
+[cache]
+path = "cache"
+
+[scheduler]
+enabled = true
+cron = "0 2 * * *"
+projects = [
+ "~/Documents/Projects/pi-maintainer/PiMaintaino/PiMainteno",
+ "~/Documents/Projects/health_web"
+]
+
+[systemd_monitor]
+enabled = true
+units = ["nginx.service", "redis.service"]
+
+[web]
+host = "0.0.0.0"
+port = 8080
