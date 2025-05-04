@@ -42,7 +42,6 @@ use std::collections::HashMap;
 use std::path::Path;
 use tokio::fs;
 use tokio::process::Command;
-use std::process::Stdio;
 use anyhow::anyhow;
 
 impl PatchApplier {
@@ -50,36 +49,33 @@ impl PatchApplier {
         PatchApplier { codex, cache }
     }
 
-    /// Clean up the raw patch text, stripping markdown fences and any leading/trailing garbage,
-    /// retaining only the unified diff content.
+    /// Clean up the raw patch text, stripping markdown fences and retaining
+    /// only the unified diff content starting with 'diff --git' headers.
+    /// Returns an empty string if no valid diff headers are found.
     fn clean_patch(raw: &str) -> String {
         let mut cleaned = Vec::new();
-        let mut started = false;
+        let mut in_diff = false;
         for line in raw.lines() {
-            // Skip code fences; break on closing fence after diff started
+            // Skip leading markdown code fences; end on closing fence after diff starts
             if line.starts_with("```") {
-                if started {
+                if in_diff {
                     break;
                 } else {
                     continue;
                 }
             }
-            if !started {
-                // Detect start of diff or hunk
-                if line.starts_with("diff --git")
-                    || line.starts_with("--- ")
-                    || line.starts_with("+++ ")
-                    || line.starts_with("@@ ")
-                    || line.starts_with("index ")
-                {
-                    started = true;
+            // Detect diff header to start collecting
+            if !in_diff {
+                if line.starts_with("diff --git") {
+                    in_diff = true;
                     cleaned.push(line);
                 }
             } else {
                 cleaned.push(line);
             }
         }
-        if cleaned.is_empty() {
+        if !in_diff || cleaned.is_empty() {
+            // No valid diff header found
             String::new()
         } else {
             let mut s = cleaned.join("\n");
@@ -100,7 +96,7 @@ impl PatchApplier {
         // Clean the raw patch to extract a valid unified diff
         let cleaned = Self::clean_patch(patch);
         if cleaned.trim().is_empty() {
-            return Err(anyhow!("Patch contained no valid diff; skipping apply"));
+            return Err(anyhow!("Patch contained no valid diff header; skipping apply"));
         }
         // Prompt LLM to apply the patch and return updated file contents
         let updated = self.codex.apply_patch(project, &cleaned).await?;

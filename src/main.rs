@@ -2,6 +2,9 @@ use std::path::PathBuf;
 use clap::Parser;
 use tokio::signal;
 use tracing_subscriber::prelude::*;
+use std::sync::Arc;
+use tokio::sync::Mutex;
+
 // Initialize tracing with environment filter for log level configuration
 
 mod config;
@@ -53,8 +56,6 @@ async fn main() -> anyhow::Result<()> {
 
     // 5. Scheduler for periodic scans
     // Wrap scheduler in Arc<Mutex<>> to allow manual triggers from the web UI
-    use std::sync::Arc;
-    use tokio::sync::Mutex;
     let scheduler = Arc::new(Mutex::new(
         scheduler::Scheduler::new(
             cfg.clone(),
@@ -136,4 +137,3 @@ async fn main() -> anyhow::Result<()> {
     patch_app.shutdown().await?;
     Ok(())
 }
-
