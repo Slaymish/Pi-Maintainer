@@ -53,6 +53,11 @@ impl Scheduler {
         for proj in &self.cfg.projects {
             tracing::info!(project = proj, "Scheduler processing project");
             self.cache.insert("scheduler.current_project", proj)?;
+            // Clear any previous patch apply error for this project
+            let error_key = format!("scheduler.patch_error.{}", proj);
+            if let Err(e) = self.cache.insert(&error_key, "") {
+                tracing::warn!(project = proj, error = %e, "Failed to clear previous patch error");
+            }
             // Skip non-existent project paths
             if !Path::new(proj).exists() {
                 tracing::warn!(project = proj, "Project path does not exist, skipping");
@@ -78,6 +83,11 @@ impl Scheduler {
             // Apply patch to the project directory
             if let Err(err) = self.patch_applier.apply(proj, &patch) {
                 tracing::error!(project = proj, error = %err, "Failed to apply patch for project, skipping service restart");
+                // Cache patch apply error for display in web UI
+                let err_str = err.to_string();
+                if let Err(e) = self.cache.insert(&error_key, &err_str) {
+                    tracing::warn!(project = proj, error = %e, "Failed to cache patch error");
+                }
                 continue;
             }
             tracing::info!(project = proj, "Patch applied successfully");

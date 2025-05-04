@@ -6,8 +6,10 @@ use serde_json::Value;
 
 /// Strip ANSI/control characters and leading/trailing Markdown code fences (e.g., ``` or ```diff) from the patch text
 fn strip_markdown_fences(s: &str) -> String {
+    // Replace VT100 "Next Line" (ESC E) control sequence with newline to preserve line breaks
+    let cleaned = s.replace("\x1bE", "\n");
     // Remove ANSI/control characters except newline and tab
-    let filtered: String = s.chars()
+    let filtered: String = cleaned.chars()
         .filter(|&c| !c.is_control() || c == '\n' || c == '\t')
         .collect();
     let lines: Vec<&str> = filtered.lines().collect();

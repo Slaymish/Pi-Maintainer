@@ -149,6 +149,15 @@ impl WebServer {
                             } else {
                                 html.push_str("<h3>Recent Patch Suggestion</h3>\n<p>None</p>\n");
                             }
+                            // Patch Apply Error
+                            let error_key = format!("scheduler.patch_error.{}", project);
+                            let patch_error = cache.get(&error_key).ok().flatten().unwrap_or_default();
+                            if !patch_error.is_empty() {
+                                let escaped_error = html_escape(&patch_error);
+                                html.push_str("<h3>Patch Apply Error</h3>\n<pre style=\"color:red;\">");
+                                html.push_str(&escaped_error);
+                                html.push_str("</pre>\n");
+                            }
                             // Commit History
                             let commit_key = format!("scheduler.commit_log.{}", project);
                             let commit_log: Vec<String> = match cache.get(&commit_key) {
