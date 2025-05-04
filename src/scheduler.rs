@@ -81,7 +81,7 @@ impl Scheduler {
                 continue;
             }
             // Apply patch to the project directory
-            if let Err(err) = self.patch_applier.apply(proj, &patch) {
+            if let Err(err) = self.patch_applier.apply(proj, &patch).await {
                 tracing::error!(project = proj, error = %err, "Failed to apply patch for project, skipping service restart");
                 // Cache patch apply error for display in web UI
                 let err_str = err.to_string();

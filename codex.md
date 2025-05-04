@@ -1,87 +1,95 @@
-Here’s a comprehensive overview of PiMainteno after inspecting the codebase:
+Here’s a comprehensive, project-wide summary of PiMainteno based on its files and structure:
 
 1. Purpose  
-   • Automate routine code‐maintenance tasks—summaries, refactors, dependency bumps, etc.—via an LLM+Git workflow  
-   • Optionally run as a daemon (cron‐style scheduler + systemd monitor + web dashboard) or one‐shot  
+   • Automate routine code-maintenance tasks (summaries, refactors, dependency bumps, etc.)  
+   • Orchestrate via Git + LLM (“codex” CLI)  
+   • Can run once or as a long-lived daemon (cron scheduler + systemd monitor + web dashboard)
 
 2. Tech Stack  
-   • Language: Rust, async via Tokio  
+   • Language: Rust (async with Tokio)  
    • Storage: sled key/value DB for caching  
-   • Web: Axum + Tower for the dashboard/API  
-   • LLM: external “codex” CLI invoked via shell  
-   • Git: patch application, commit & push  
-   • Logging: tracing + tracing‐subscriber  
+   • Web/API: Axum + Tower  
+   • LLM: external `codex` CLI invoked via shell  
+   • Git: shelling out to `git` for diffs, `git apply`, commits & pushes  
+   • Logging: `tracing` + `tracing-subscriber`
 
-3. Entry Point & Launch Modes (`src/main.rs`)  
-   • CLI flags  
+3. Configuration (PiMainteno.toml)  
+   • [llm]: provider, API key, model, extra flags  
+   • [cache]: path to sled database  
+   • [scheduler]: enabled, cron spec, list of project paths  
+   • [systemd_monitor]: enabled, unit names  
+   • [web]: host, port
+
+4. Entry Points & Modes (`src/main.rs`)  
+   • CLI flags:  
      – `--config <path>` (default “PiMainteno.toml”)  
-     – `--one-shot` (run scheduler once and exit)  
-   • Daemon mode: spawns three async tasks  
-     1. Scheduler loop (cron spec)  
+     – `--one-shot` (run scheduler once, then exit)  
+   • If daemon: spawns three async tasks in parallel:  
+     1. Scheduler loop (cron)  
      2. Systemd‐unit monitor (stubbed)  
-     3. Web server  
-
-4. Configuration (`PiMainteno.toml`)  
-   • `[llm]`: provider, API key, model, extra flags  
-   • `[cache]`: path to sled DB  
-   • `[scheduler]`: enabled flag, cron schedule, project paths  
-   • `[systemd_monitor]`: enabled flag, unit names  
-   • `[web]`: host, port  
+     3. Web server
 
 5. Caching Layer (`src/cache.rs`)  
    • `DataCache` wraps sled  
-   • Tracks per-project: last run timestamps, Git HEAD hashes, cached LLM outputs (summaries, patches, commit logs), error flags  
+   • Tracks per-project:  
+     – Last run timestamp  
+     – Git HEAD hash  
+     – LLM outputs (summaries, diffs, commit messages)  
+     – Error flags and retry logic
 
 6. LLM Interface (`src/codex_client.rs`)  
-   • `CodexClient` shells out to `codex` CLI  
-   • Main methods  
+   • `CodexClient` shells out to `codex` CLI under the hood  
+   • Key methods:  
      – `summarize_project(path) → String`  
-     – `generate_patch(path) → unified‐diff`  
+     – `generate_patch(path) → unified-diff String`  
      – `generate_commit_message(path, diff) → String`  
-   • Strips JSONL or fenced Markdown and ANSI codes  
+   • Post-processing: strips JSONL, Markdown fences, ANSI escape codes
 
-7. Project Summarization (`src/summarizer.rs`)  
-   • Computes cache key from Git HEAD; reuses if unchanged  
-   • Writes `codex.md` at project root  
+7. Project Summarizer (`src/summarizer.rs`)  
+   • Computes cache key from Git HEAD  
+   • Reuses summary if repo unchanged  
+   • Persists latest summary in `codex.md` at project root
 
 8. Patch Generation & Application (`src/patcher.rs`)  
-   • `PatchGenerator` fetches diff from LLM, caches it  
+   • `PatchGenerator` fetches or reuses cached diff from LLM  
    • `PatchApplier` runs `git apply --whitespace=fix`  
-   • Stages, then calls LLM for commit message; commits & pushes  
+   • Stages changes, invokes LLM for commit message, then `git commit` & `git push`
 
 9. Scheduler (`src/scheduler.rs`)  
-   • `run_once()` iterates configured projects:  
+   • `run_once()` drives end-to-end flow for each configured project:  
      1. Summarize  
      2. Generate patch  
-     3. If patch non-empty: apply, `git add`, commit, push, cache last 50 commits, restart `<project>.service`  
-   • Logs start/end times and statuses in sled  
+     3. If diff non-empty: apply, add, commit, push, cache last 50 commits  
+     4. Restart `<project>.service` via `systemctl`  
+   • In daemon mode: sleeps until next cron tick
 
 10. Systemd Monitor (`src/systemd_monitor.rs`)  
-   • Stub for detecting unit failures (planned D-Bus/journal integration)  
-   • Intended to trigger auto-fixes but not yet implemented  
+    • Placeholder for detecting unit failures via D-Bus/journal  
+    • Currently unimplemented stub—planned future auto-fix triggers
 
 11. Web Dashboard & API (`src/web_server.rs`)  
-   • GET `/` → HTML UI with status panels, summaries, patch previews, commit history  
-   • GET `/api/status` → scheduler & systemd status JSON  
-   • GET `/api/projects` → list of projects  
-   • GET `/api/projects/:id/summary` → project summary  
-   • “Run Now” button in UI exists but POST `/api/run` handler is not yet wired  
+    • HTML UI (GET `/`) showing status panels, summaries, diff previews, commit history  
+    • JSON endpoints:  
+      – GET `/api/status` → scheduler + systemd status  
+      – GET `/api/projects` → list of projects  
+      – GET `/api/projects/:id/summary` → project summary text  
+    • “Run Now” button UI exists, but POST `/api/run` handler is not yet wired up
 
 12. Deployment Helper (`upload_service.sh`)  
-   • Builds with `cargo build --release`, installs binary to `/usr/local/bin/pi-mainteno`  
-   • Copies `PiMainteno.toml` to `/etc/pi-mainteno/`  
-   • Restarts systemd service  
+    • Builds with `cargo build --release`  
+    • Installs binary to `/usr/local/bin/pi-mainteno`  
+    • Copies config to `/etc/pi-mainteno/`  
+    • Restarts systemd service
 
 13. Observability & Logging  
-   • Structured logs via `tracing`  
-   • Verbosity controlled by `RUST_LOG`  
-   • Logs all LLM calls, Git ops, errors, status changes  
+    • Uses structured logs via `tracing`  
+    • Runtime verbosity controlled by `RUST_LOG`  
+    • Logs every LLM call, Git operation, cache hit/miss, and error
 
 14. Known Gaps & TODOs  
-   • Real systemd‐failure detection unimplemented  
-   • Manual “Run Now” API endpoint not registered  
-   • Could embed an LLM client natively instead of shelling out  
-   • No dry‐run or patch‐review workflow  
+    • Real systemd‐failure detection/unix-socket integration not implemented  
+    • “Run Now” API endpoint not wired into router  
+    • No built-in dry-run or patch-review workflow  
+    • Could embed an LLM client natively (avoiding shell calls)
 
-—  
-In sum, PiMainteno is a Rust‐based, Git‐centric automation tool that orchestrates LLM‐driven code maintenance (summaries, patches, commits), schedules it via cron, monitors systemd, and exposes a dashboard—all wired together through sled caching and structured logging.
+In sum, PiMainteno is a Rust-based, Git-centric automation tool that leverages an external LLM to keep projects healthy by summarizing, generating patches, committing, pushing, monitoring services, and exposing a web dashboard for visibility.

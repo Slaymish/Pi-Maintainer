@@ -1,10 +1,11 @@
-#!/bin/bash
-
+#!/usr/bin/env bash
+set -euo pipefail
 cargo build --release
 
 echo "Built!"
 
 sudo install -m755 target/release/PiMainteno /usr/local/bin/pi-mainteno
+sudo mkdir -p /etc/pi-mainteno
 
 sudo cp PiMainteno.toml /etc/pi-mainteno/PiMainteno.toml
 sudo systemctl restart Pi-Maintainer.service

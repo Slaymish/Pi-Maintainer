@@ -212,4 +212,50 @@ impl CodexClient {
         let cleaned = strip_markdown_fences(result.trim());
         Ok(cleaned)
     }
+    
+    /// Apply a unified diff patch by prompting the LLM to apply it and return updated file contents.
+    pub async fn apply_patch(&self, project: &str, diff: &str) -> Result<String> {
+        tracing::info!(project = project, "Codex applying patch via CLI");
+        let prompt_base = "Given the following unified diff patch, apply the patch to the project. For each modified or new file, output the full updated file contents. Delimit files using markers: <<<FILE: <path>>> before their contents, and <<<END>>> after their contents. Do not output anything else.";
+        let prompt = format!("{}\n\n{}", prompt_base, diff);
+        let mut cmd = Command::new("codex");
+        cmd.arg("-q")
+            .arg("--provider").arg(&self.config.provider)
+            .arg(prompt)
+            .current_dir(project)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        let output = cmd.output().await?;
+        if !output.status.success() {
+            let err = String::from_utf8_lossy(&output.stderr);
+            return Err(anyhow!(
+                "codex CLI returned non-zero exit status: {}; stderr: {}",
+                output.status,
+                err.trim()
+            ));
+        }
+        let raw = String::from_utf8(output.stdout)?;
+        let mut collected = Vec::new();
+        for line in raw.lines() {
+            if let Ok(json) = serde_json::from_str::<Value>(line) {
+                if json.get("role").and_then(Value::as_str) == Some("assistant") {
+                    if let Some(contents) = json.get("content").and_then(Value::as_array) {
+                        for item in contents {
+                            if item.get("type").and_then(Value::as_str) == Some("output_text") {
+                                if let Some(text) = item.get("text").and_then(Value::as_str) {
+                                    collected.push(text.to_string());
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        let result = if !collected.is_empty() {
+            collected.join("")
+        } else {
+            raw
+        };
+        Ok(result)
+    }
 }

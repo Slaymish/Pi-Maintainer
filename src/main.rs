@@ -48,8 +48,8 @@ async fn main() -> anyhow::Result<()> {
 
     // 4. Build domain modules
     let summarizer = summarizer::ProjectSummarizer::new(codex.clone(), data_cache.clone());
-    let patch_gen   = patcher::PatchGenerator::new(codex.clone(), data_cache.clone());
-    let patch_app   = patcher::PatchApplier::new(data_cache.clone());
+    let patch_gen = patcher::PatchGenerator::new(codex.clone(), data_cache.clone());
+    let patch_app = patcher::PatchApplier::new(codex.clone(), data_cache.clone());
 
     // 5. Scheduler for periodic scans
     // Wrap scheduler in Arc<Mutex<>> to allow manual triggers from the web UI

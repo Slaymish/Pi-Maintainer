@@ -10,6 +10,7 @@ pub struct PatchGenerator {
 
 #[derive(Clone)]
 pub struct PatchApplier {
+    codex: CodexClient,
     cache: DataCache,
 }
 
@@ -37,13 +38,16 @@ impl PatchGenerator {
     }
 }
 
-use std::process::{Command, Stdio};
-use std::io::Write;
+use std::collections::HashMap;
+use std::path::Path;
+use tokio::fs;
+use tokio::process::Command;
+use std::process::Stdio;
 use anyhow::anyhow;
 
 impl PatchApplier {
-    pub fn new(cache: DataCache) -> Self {
-        PatchApplier { cache }
+    pub fn new(codex: CodexClient, cache: DataCache) -> Self {
+        PatchApplier { codex, cache }
     }
 
     /// Clean up the raw patch text, stripping markdown fences and any leading/trailing garbage,
@@ -89,49 +93,75 @@ impl PatchApplier {
         Ok(())
     }
 
-    /// Apply a unified diff patch to the given project directory using `git apply`.
-    /// The patch is provided on stdin to `git apply`.
-    pub fn apply(&self, project: &str, patch: &str) -> Result<()> {
-        tracing::info!(project = project, "Applying patch");
+    /// Apply a unified diff patch to the given project by prompting the LLM to apply it,
+    /// write updated files, stage, and commit the changes.
+    pub async fn apply(&self, project: &str, patch: &str) -> Result<String> {
+        tracing::info!(project = project, "Applying patch via LLM applier");
         // Clean the raw patch to extract a valid unified diff
         let cleaned = Self::clean_patch(patch);
         if cleaned.trim().is_empty() {
             return Err(anyhow!("Patch contained no valid diff; skipping apply"));
         }
-        // Spawn `git apply` to apply the cleaned patch, capturing output for diagnostics
-        let mut child = Command::new("git")
-            .arg("apply")
-            .arg("--whitespace=fix")
-            .arg("-")
+        // Prompt LLM to apply the patch and return updated file contents
+        let updated = self.codex.apply_patch(project, &cleaned).await?;
+        // Parse updated contents into file paths and data
+        let mut files: HashMap<String, String> = HashMap::new();
+        let mut current: Option<String> = None;
+        let mut buffer: Vec<String> = Vec::new();
+        for line in updated.lines() {
+            if line.starts_with("<<<FILE: ") && line.ends_with(">>>") {
+                // flush previous file
+                if let Some(prev) = current.take() {
+                    let mut data = buffer.join("\n"); data.push('\n');
+                    files.insert(prev, data);
+                    buffer.clear();
+                }
+                // start new file
+                let fname = &line["<<<FILE: ".len()..line.len() - 3];
+                current = Some(fname.to_string());
+            } else if line.trim() == "<<<END>>>" {
+                if let Some(prev) = current.take() {
+                    let mut data = buffer.join("\n"); data.push('\n');
+                    files.insert(prev, data);
+                    buffer.clear();
+                }
+            } else if current.is_some() {
+                buffer.push(line.to_string());
+            }
+        }
+        // flush last file if no END marker
+        if let Some(prev) = current.take() {
+            let mut data = buffer.join("\n"); data.push('\n');
+            files.insert(prev, data);
+        }
+        // Write each file to disk
+        for (path, data) in &files {
+            let full = Path::new(project).join(path);
+            if let Some(dir) = full.parent() {
+                fs::create_dir_all(dir).await?;
+            }
+            fs::write(&full, data).await?;
+        }
+        // Stage all changes
+        let status = Command::new("git")
+            .arg("add").arg(".")
             .current_dir(project)
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-            .map_err(|e| anyhow!("Failed to spawn `git apply`: {}", e))?;
-        // Write cleaned patch to stdin
-        if let Some(mut stdin) = child.stdin.take() {
-            stdin
-                .write_all(cleaned.as_bytes())
-                .map_err(|e| anyhow!("Failed to write patch to stdin: {}", e))?;
-        } else {
-            return Err(anyhow!("Failed to open stdin for git apply"));
+            .status()
+            .await?;
+        if !status.success() {
+            return Err(anyhow!("git add failed with status {:?}", status));
         }
-        // Wait for git apply to finish and capture output
-        let output = child
-            .wait_with_output()
-            .map_err(|e| anyhow!("Failed to wait on git apply: {}", e))?;
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        if output.status.success() {
-            Ok(())
-        } else {
-            Err(anyhow!(
-                "`git apply` failed with status: {}; stdout: {}; stderr: {}",
-                output.status,
-                stdout.trim(),
-                stderr.trim()
-            ))
+        // Generate commit message via LLM
+        let msg = self.codex.generate_commit_message(project, patch).await?;
+        // Commit staged changes
+        let status = Command::new("git")
+            .arg("commit").arg("-m").arg(&msg)
+            .current_dir(project)
+            .status()
+            .await?;
+        if !status.success() {
+            return Err(anyhow!("git commit failed with status {:?}", status));
         }
+        Ok(msg)
     }
 }

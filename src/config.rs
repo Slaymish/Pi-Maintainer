@@ -61,25 +61,19 @@ impl ConfigLoader {
         };
 
         // Expand tilde in cache path (e.g., "~/path" -> "/home/user/path")
-        if let Some(s) = cfg.cache.path.to_str() {
-            if let Some(stripped) = s.strip_prefix("~/") {
-                if let Ok(home) = std::env::var("HOME") {
-                    let mut new_path = home;
-                    new_path.push('/');
-                    new_path.push_str(stripped);
-                    cfg.cache.path = PathBuf::from(new_path);
+        if let Some(home) = std::env::var("HOME").ok() {
+            if let Some(s) = cfg.cache.path.to_str() {
+                if let Some(stripped) = s.strip_prefix("~/") {
+                    cfg.cache.path = PathBuf::from(&home).join(stripped);
                 }
             }
         }
 
         // Expand tilde in scheduler project paths
-        for project in &mut cfg.scheduler.projects {
-            if let Some(stripped) = project.strip_prefix("~/") {
-                if let Ok(home) = std::env::var("HOME") {
-                    let mut new_proj = home.clone();
-                    new_proj.push('/');
-                    new_proj.push_str(stripped);
-                    *project = new_proj;
+        if let Some(home) = std::env::var("HOME").ok() {
+            for project in &mut cfg.scheduler.projects {
+                if let Some(stripped) = project.strip_prefix("~/") {
+                    *project = PathBuf::from(&home).join(stripped).to_string_lossy().into_owned();
                 }
             }
         }
