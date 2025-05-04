@@ -3,7 +3,6 @@ use crate::summarizer::ProjectSummarizer;
 use crate::patcher::{PatchGenerator, PatchApplier};
 use crate::cache::DataCache;
 use anyhow::Result;
-use tokio::time::{sleep, Duration};
 use tokio::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -30,16 +29,6 @@ impl Scheduler {
             patch_gen,
             patch_applier,
             cache,
-        }
-    }
-
-    pub async fn start(&mut self) -> Result<()> {
-        if !self.cfg.enabled {
-            return Ok(());
-        }
-        loop {
-            self.run_once().await?;
-            sleep(Duration::from_secs(60 * 60 * 24)).await;
         }
     }
 
