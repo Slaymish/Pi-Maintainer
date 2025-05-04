@@ -55,16 +55,15 @@ impl PatchApplier {
     /// The patch is provided on stdin to `git apply`.
     pub fn apply(&self, project: &str, patch: &str) -> Result<()> {
         tracing::info!(project = project, "Applying patch");
-        // Spawn `git apply` to apply the patch
-        let mut cmd = Command::new("git");
-        let mut child = cmd
+        // Spawn `git apply` to apply the patch, capturing output for diagnostics
+        let mut child = Command::new("git")
             .arg("apply")
             .arg("--whitespace=fix")
             .arg("-")
             .current_dir(project)
             .stdin(Stdio::piped())
-            .stdout(Stdio::inherit())
-            .stderr(Stdio::inherit())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
             .spawn()
             .map_err(|e| anyhow!("Failed to spawn `git apply`: {}", e))?;
         // Write patch to stdin
@@ -75,14 +74,21 @@ impl PatchApplier {
         } else {
             return Err(anyhow!("Failed to open stdin for git apply"));
         }
-        // Wait for git apply to finish
-        let status = child
-            .wait()
+        // Wait for git apply to finish and capture output
+        let output = child
+            .wait_with_output()
             .map_err(|e| anyhow!("Failed to wait on git apply: {}", e))?;
-        if status.success() {
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        if output.status.success() {
             Ok(())
         } else {
-            Err(anyhow!("`git apply` failed with status: {}", status))
+            Err(anyhow!(
+                "`git apply` failed with status: {}; stdout: {}; stderr: {}",
+                output.status,
+                stdout.trim(),
+                stderr.trim()
+            ))
         }
     }
 }
