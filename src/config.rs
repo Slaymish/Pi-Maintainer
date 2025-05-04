@@ -42,6 +42,8 @@ pub struct SystemdMonitorConfig {
 pub struct WebConfig {
     pub host: String,
     pub port: u16,
+    #[serde(default = "WebConfig::default_static_dir")]
+    pub static_dir: std::path::PathBuf,
 }
 
 pub struct ConfigLoader;
@@ -78,5 +80,13 @@ impl ConfigLoader {
         }
 
         Ok(cfg)
+    }
+}
+
+// Default values for web configuration
+impl WebConfig {
+    /// Default directory for static frontend assets
+    fn default_static_dir() -> PathBuf {
+        PathBuf::from("frontend/dist")
     }
 }

@@ -1,0 +1,6 @@
+[build]
+target = "wasm32-unknown-unknown"
+
+[watch]
+ignore = ["../backend", "../some_other_dir"]
+
