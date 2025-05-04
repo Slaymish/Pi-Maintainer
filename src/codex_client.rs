@@ -5,19 +5,17 @@ use std::process::Stdio;
 use serde_json::Value;
 
 /// Strip ANSI/control characters and leading/trailing Markdown code fences (e.g., ``` or ```diff) from the patch text
+// Remove ANSI escape sequences and control characters (except newline and tab).
+// Also strip leading/trailing Markdown code fences (```).
 fn strip_markdown_fences(s: &str) -> String {
-    // Remove ANSI escape sequences and control characters (except newline and tab),
-    // converting VT100 Next Line (ESC E) to newline.
     let mut filtered = String::new();
     let mut chars = s.chars().peekable();
     while let Some(c) = chars.next() {
+        // Remove ANSI escape sequences and other control characters (except newline and tab)
         if c == '\x1b' {
             if let Some(&next) = chars.peek() {
-                if next == 'E' {
-                    chars.next();
-                    filtered.push('\n');
-                    continue;
-                } else if next == '[' {
+                if next == '[' {
+                    // Skip '['
                     chars.next();
                     // Skip until final byte (ASCII '@' to '~')
                     while let Some(&nc) = chars.peek() {
@@ -26,15 +24,14 @@ fn strip_markdown_fences(s: &str) -> String {
                             break;
                         }
                     }
-                    continue;
                 } else {
-                    // Skip unknown escape sequence
+                    // Skip next char of unknown escape sequence
                     chars.next();
-                    continue;
                 }
             }
+            // Skip the escape character itself
+            continue;
         } else if c.is_control() && c != '\n' && c != '\t' {
-            // Skip other control chars
             continue;
         }
         filtered.push(c);
