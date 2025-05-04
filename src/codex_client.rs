@@ -6,12 +6,39 @@ use serde_json::Value;
 
 /// Strip ANSI/control characters and leading/trailing Markdown code fences (e.g., ``` or ```diff) from the patch text
 fn strip_markdown_fences(s: &str) -> String {
-    // Replace VT100 "Next Line" (ESC E) control sequence with newline to preserve line breaks
-    let cleaned = s.replace("\x1bE", "\n");
-    // Remove ANSI/control characters except newline and tab
-    let filtered: String = cleaned.chars()
-        .filter(|&c| !c.is_control() || c == '\n' || c == '\t')
-        .collect();
+    // Remove ANSI escape sequences and control characters (except newline and tab),
+    // converting VT100 Next Line (ESC E) to newline.
+    let mut filtered = String::new();
+    let mut chars = s.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c == '\x1b' {
+            if let Some(&next) = chars.peek() {
+                if next == 'E' {
+                    chars.next();
+                    filtered.push('\n');
+                    continue;
+                } else if next == '[' {
+                    chars.next();
+                    // Skip until final byte (ASCII '@' to '~')
+                    while let Some(&nc) = chars.peek() {
+                        chars.next();
+                        if ('@'..='~').contains(&nc) {
+                            break;
+                        }
+                    }
+                    continue;
+                } else {
+                    // Skip unknown escape sequence
+                    chars.next();
+                    continue;
+                }
+            }
+        } else if c.is_control() && c != '\n' && c != '\t' {
+            // Skip other control chars
+            continue;
+        }
+        filtered.push(c);
+    }
     let lines: Vec<&str> = filtered.lines().collect();
     let mut start = 0;
     // Skip leading fence lines
@@ -23,7 +50,12 @@ fn strip_markdown_fences(s: &str) -> String {
     while end > start && lines[end - 1].trim_start().starts_with("```") {
         end -= 1;
     }
-    lines[start..end].join("\n")
+    let mut result = lines[start..end].join("\n");
+    // Ensure trailing newline
+    if !result.ends_with('\n') {
+        result.push('\n');
+    }
+    result
 }
 
 #[derive(Clone)]
@@ -88,8 +120,8 @@ impl CodexClient {
     pub async fn generate_patch(&self, context: &str) -> Result<String> {
         tracing::info!(project = context, "Codex generating patch via CLI");
         // Generate a minimal unified diff patch for this project
-        // Prompt should instruct the model to output only raw unified diff, without markdown fences or explanations
-        let prompt = "Based on the current code in this directory, generate a minimal patch in unified diff format to improve code quality. Output only the raw unified diff without markdown fences or any extra explanation.";
+        // Prompt should instruct the model to include full diff headers and output only raw unified diff
+        let prompt = "Based on the current code in this directory, generate a minimal patch in unified diff format to improve code quality. Include full unified diff headers (diff --git, --- a/<path>, +++ b/<path>) before each hunk. Output only the raw unified diff without markdown fences or any extra explanation.";
         let mut cmd = Command::new("codex");
         cmd.arg("-q")
             .arg("--provider").arg(&self.config.provider)
