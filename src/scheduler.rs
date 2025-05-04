@@ -158,4 +158,16 @@ impl Scheduler {
     pub fn is_enabled(&self) -> bool {
         self.cfg.enabled
     }
+    /// Get current cron specification (interval in minutes)
+    pub fn get_cron(&self) -> String {
+        self.cfg.cron.clone()
+    }
+    /// Update cron specification (interval in minutes)
+    pub fn set_cron(&mut self, cron: String) {
+        self.cfg.cron = cron;
+    }
+    /// Enable or disable scheduler
+    pub fn set_enabled(&mut self, enabled: bool) {
+        self.cfg.enabled = enabled;
+    }
 }

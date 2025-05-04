@@ -92,20 +92,25 @@ async fn main() -> anyhow::Result<()> {
         let scheduler_loop = scheduler.clone();
         tokio::spawn(async move {
             use tokio::time::{sleep, Duration};
-            // interval of 24 hours
-            let interval = Duration::from_secs(60 * 60 * 24);
             loop {
-                {
-                    let mut sched = scheduler_loop.lock().await;
-                    // Skip run if scheduler disabled
-                    if !sched.is_enabled() {
-                        break;
-                    }
-                    if let Err(err) = sched.run_once().await {
+                // Determine enabled state and schedule interval (in minutes)
+                let (enabled, cron_spec) = {
+                    let sched = scheduler_loop.lock().await;
+                    (sched.is_enabled(), sched.get_cron())
+                };
+                if enabled {
+                    // Run scheduler
+                    if let Err(err) = scheduler_loop.lock().await.run_once().await {
                         tracing::error!(error = %err, "Scheduler encountered an error");
                     }
+                    // Parse interval from cron_spec (minutes)
+                    let minutes = cron_spec.parse::<u64>().unwrap_or(1440);
+                    let interval = Duration::from_secs(minutes.saturating_mul(60));
+                    sleep(interval).await;
+                } else {
+                    // Poll periodically to check for enable toggle
+                    sleep(Duration::from_secs(60)).await;
                 }
-                sleep(interval).await;
             }
         });
     }

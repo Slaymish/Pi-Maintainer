@@ -9,8 +9,10 @@ use axum::{
     extract::Path,
     http::StatusCode,
 };
-use serde::Serialize;
+use serde::{Serialize, Deserialize};
 use serde_json;
+use axum::extract::Json as ExtractJson;
+use tokio::process::Command;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 use std::net::SocketAddr;
@@ -42,10 +44,17 @@ impl WebServer {
             project: String,
             summary: String,
         }
+        #[derive(Deserialize)]
+        struct SchedulerUpdate {
+            enabled: bool,
+            cron: String,
+        }
         // Prepare project lists for handlers
         let html_projects = self.projects.clone();
         let json_projects = self.projects.clone();
         let summary_projects = self.projects.clone();
+        // Clone projects for service restart endpoint to avoid move conflicts
+        let restart_projects = self.projects.clone();
         // Helper to escape HTML special characters
         fn html_escape(s: &str) -> String {
             s.replace('&', "&amp;")
@@ -55,8 +64,12 @@ impl WebServer {
         // Prepare cache clones for handlers
         let cache_for_html = self.cache.clone();
         let status_cache = self.cache.clone();
-        // Clone scheduler for manual trigger API
-        let scheduler_for_api = self.scheduler.clone();
+        // Clone scheduler for HTML dashboard
+        let scheduler_for_html = self.scheduler.clone();
+        // Clone scheduler for manual run and scheduler API endpoints
+        let sched_api_run = self.scheduler.clone();
+        let sched_api_scheduler_get = self.scheduler.clone();
+        let sched_api_scheduler_update = self.scheduler.clone();
         // Build HTTP app with dynamic dashboard content and JSON API
         let app = Router::new()
             // HTML dashboard
@@ -65,7 +78,11 @@ impl WebServer {
                 get(move || {
                     let projects = html_projects.clone();
                     let cache = cache_for_html.clone();
+                    let scheduler = scheduler_for_html.clone();
                     async move {
+                        // Fetch scheduler control state
+                        let enabled = scheduler.lock().await.is_enabled();
+                        let cron = scheduler.lock().await.get_cron();
                         // Fetch scheduler status
                         let sched_status = match cache.get("scheduler.status") {
                             Ok(Some(s)) => s,
@@ -104,7 +121,22 @@ impl WebServer {
                         html.push_str("ul { list-style: none; padding-left: 0;}\n");
                         html.push_str("li { margin-bottom: 0.5rem;}\n");
                         html.push_str(".run-button { background-color: #4CAF50; border: none; color: white; padding: 0.5rem 1rem; text-align: center; font-size: 1rem; margin-left: 1rem; cursor: pointer; border-radius: 4px; }\n");
+                        html.push_str("/* Toggle switch */\n");
+                        html.push_str(".switch { position: relative; display: inline-block; width: 60px; height: 34px; }\n");
+                        html.push_str(".switch input { opacity: 0; width: 0; height: 0; }\n");
+                        html.push_str(".slider { position: absolute; cursor: pointer; top: 0; left: 0; right: 0; bottom: 0; background-color: #ccc; transition: .4s; }\n");
+                        html.push_str(".slider:before { position: absolute; content: \"\"; height: 26px; width: 26px; left: 4px; bottom: 4px; background-color: white; transition: .4s; }\n");
+                        html.push_str("input:checked + .slider { background-color: #4CAF50; }\n");
+                        html.push_str("input:focus + .slider { box-shadow: 0 0 1px #4CAF50; }\n");
+                        html.push_str("input:checked + .slider:before { transform: translateX(26px); }\n");
+                        html.push_str(".slider.round { border-radius: 34px; }\n");
+                        html.push_str(".slider.round:before { border-radius: 50%; }\n");
                         html.push_str("</style>\n</head>\n<body>\n<header><h1>PiMainteno Dashboard</h1><button id=\"run-btn\" class=\"run-button\">Run Now</button></header>\n<div class=\"container\">\n");
+                        // Scheduler Control
+                        html.push_str("<div class=\"section\">\n<h2>Scheduler Control</h2>\n");
+                        html.push_str(&format!("<label class=\"switch\">\n<input type=\"checkbox\" id=\"scheduler-toggle\"{}>\n<span class=\"slider round\"></span>\n</label>\n<label for=\"scheduler-toggle\">Enable Scheduler</label>\n", if enabled { " checked" } else { "" }));
+                        html.push_str(&format!("<div style=\"margin-top:1rem;\"><label for=\"scheduler-cron\">Interval (minutes):</label>\n<input type=\"number\" id=\"scheduler-cron\" value=\"{}\" style=\"width: 80px; margin-left: 1rem;\"/>\n<button id=\"scheduler-update-btn\" class=\"run-button\">Update Schedule</button></div>\n", cron));
+                        html.push_str("</div>\n");
                         // System Overview
                         html.push_str("<div class=\"section\">\n<h2>System Overview</h2>\n<ul>\n");
                         html.push_str(&format!("<li>Scheduler: {} (last start: {}, last end: {}, current: {})</li>\n", sched_status, last_start, last_end, current));
@@ -126,7 +158,7 @@ impl WebServer {
                         }
                         html.push_str("</div>\n");
                         // Projects
-                        for project in projects {
+                        for (idx, project) in projects.iter().enumerate() {
                             html.push_str("<div class=\"section\">\n");
                             html.push_str(&format!("<h2>Project: {}</h2>\n", html_escape(&project)));
                             // Summary
@@ -173,17 +205,70 @@ impl WebServer {
                             } else {
                                 html.push_str("<h3>Commit History</h3>\n<p>None</p>\n");
                             }
+                            // Service restart button
+                            let service = std::path::Path::new(&project)
+                                .file_name()
+                                .map(|name_os| format!("{}.service", name_os.to_string_lossy()))
+                                .unwrap_or_else(|| "".to_string());
+                            let service_exists = if !service.is_empty() {
+                                match Command::new("systemctl")
+                                    .arg("status")
+                                    .arg(&service)
+                                    .arg("--no-pager")
+                                    .status()
+                                    .await
+                                {
+                                    Ok(status) => status.success(),
+                                    Err(_) => false,
+                                }
+                            } else {
+                                false
+                            };
+                            html.push_str(&format!("<button id=\"restart-btn-{}\" class=\"run-button\"{}>Restart Service</button>\n", idx, if service_exists { "" } else { " disabled" }));
                             html.push_str("</div>\n");
                         }
+                        // Logs section
+                        html.push_str("<div class=\"section\">\n");
+                        html.push_str("<h2>Logs</h2>\n");
+                        html.push_str("<pre id=\"logs\">Loading logs...</pre>\n");
+                        html.push_str("<button id=\"refresh-logs\" class=\"run-button\">Refresh Logs</button>\n");
+                        html.push_str("</div>\n");
                         // Close container
                         html.push_str("</div>\n");
-                        // Inject JavaScript for manual run trigger
+                        // Inject JavaScript for manual actions
                         html.push_str("<script>\n");
+                        html.push_str("/* Manual run */\n");
                         html.push_str("async function triggerRun() {\n");
                         html.push_str("  const res = await fetch('/api/run', { method: 'POST' });\n");
-                        html.push_str("  if (res.ok) { alert('Run scheduled'); } else { alert('Run failed'); }\n");
+                        html.push_str("  alert(res.ok ? 'Run scheduled' : 'Run failed');\n");
                         html.push_str("}\n");
                         html.push_str("document.getElementById('run-btn').addEventListener('click', triggerRun);\n");
+                        // Service restart handlers
+                        html.push_str("async function restartService(id) {\n");
+                        html.push_str("  const res = await fetch(`/api/projects/${id}/restart`, { method: 'POST' });\n");
+                        html.push_str("  alert(res.ok ? 'Service restarted' : 'Restart failed');\n");
+                        html.push_str("}\n");
+                        html.push_str("/* Attach restart handlers */\n");
+                        for idx in 0..projects.len() {
+                            html.push_str(&format!("if (document.getElementById('restart-btn-{}')) {{ document.getElementById('restart-btn-{}').addEventListener('click', () => restartService({})); }}\n", idx, idx, idx));
+                        }
+                        // Scheduler control handlers
+                        html.push_str("async function updateScheduler() {\n");
+                        html.push_str("  const enabled = document.getElementById('scheduler-toggle').checked;\n");
+                        html.push_str("  const cron = document.getElementById('scheduler-cron').value;\n");
+                        html.push_str("  const res = await fetch('/api/scheduler', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ enabled, cron }) });\n");
+                        html.push_str("  alert(res.ok ? 'Scheduler updated' : 'Scheduler update failed');\n");
+                        html.push_str("}\n");
+                        html.push_str("document.getElementById('scheduler-toggle').addEventListener('change', updateScheduler);\n");
+                        html.push_str("document.getElementById('scheduler-update-btn').addEventListener('click', updateScheduler);\n");
+                        // Logs refresh handlers
+                        html.push_str("async function refreshLogs() {\n");
+                        html.push_str("  const res = await fetch('/api/logs');\n");
+                        html.push_str("  const text = res.ok ? await res.text() : 'Failed to fetch logs';\n");
+                        html.push_str("  document.getElementById('logs').textContent = text;\n");
+                        html.push_str("}\n");
+                        html.push_str("document.getElementById('refresh-logs').addEventListener('click', refreshLogs);\n");
+                        html.push_str("document.addEventListener('DOMContentLoaded', refreshLogs);\n");
                         html.push_str("</script>\n");
                         // Close body and html
                         html.push_str("</body>\n</html>");
@@ -195,7 +280,7 @@ impl WebServer {
             .route(
                 "/api/run",
                 post(move || {
-                    let scheduler = scheduler_for_api.clone();
+                    let scheduler = sched_api_run.clone();
                     async move {
                         // Spawn manual scheduler run
                         tokio::spawn(async move {
@@ -279,6 +364,71 @@ impl WebServer {
                             let resp = SummaryResponse { project: project.clone(), summary };
                             Ok(Json(resp))
                         }
+                    }
+                }),
+            )
+            // Logs endpoint
+            .route(
+                "/api/logs",
+                get(move || async move {
+                    let output = Command::new("journalctl")
+                        .args(&["-u", "Pi-Maintainer.service", "--no-pager", "-n", "200"])
+                        .output()
+                        .await;
+                    match output {
+                        Ok(o) => (StatusCode::OK, String::from_utf8_lossy(&o.stdout).to_string()),
+                        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, format!("Error: {}", e)),
+                    }
+                }),
+            )
+            // Service restart endpoint
+            .route(
+                "/api/projects/:id/restart",
+                post(move |Path(id): Path<usize>| {
+                    let projects = restart_projects.clone();
+                    async move {
+                        if id >= projects.len() {
+                            return Err((StatusCode::NOT_FOUND, "Project not found".to_string()));
+                        }
+                        let project = &projects[id];
+                        let service = std::path::Path::new(project)
+                            .file_name()
+                            .map(|name_os| format!("{}.service", name_os.to_string_lossy()))
+                            .unwrap_or_else(|| "".to_string());
+                        if service.is_empty() {
+                            return Err((StatusCode::BAD_REQUEST, "Invalid project path".to_string()));
+                        }
+                        match Command::new("systemctl").arg("restart").arg(&service).status().await {
+                            Ok(status) if status.success() => Ok((StatusCode::OK, Json(serde_json::json!({"status": "restarted"})))),
+                            Ok(status) => Err((StatusCode::INTERNAL_SERVER_ERROR, format!("Failed to restart {}: exit {:?}", service, status))),
+                            Err(err) => Err((StatusCode::INTERNAL_SERVER_ERROR, format!("Error executing systemctl: {}", err))),
+                        }
+                    }
+                }),
+            )
+            // Scheduler status endpoint
+            .route(
+                "/api/scheduler",
+                get(move || {
+                    let scheduler = sched_api_scheduler_get.clone();
+                    async move {
+                        let sched = scheduler.lock().await;
+                        let enabled = sched.is_enabled();
+                        let cron = sched.get_cron();
+                        Json(serde_json::json!({"enabled": enabled, "cron": cron}))
+                    }
+                }),
+            )
+            // Scheduler update endpoint
+            .route(
+                "/api/scheduler",
+                post(move |ExtractJson(payload): ExtractJson<SchedulerUpdate>| {
+                    let scheduler = sched_api_scheduler_update.clone();
+                    async move {
+                        let mut sched = scheduler.lock().await;
+                        sched.set_enabled(payload.enabled);
+                        sched.set_cron(payload.cron.clone());
+                        (StatusCode::OK, Json(serde_json::json!({"status": "updated"})))
                     }
                 }),
             );

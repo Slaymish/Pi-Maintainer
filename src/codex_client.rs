@@ -4,9 +4,10 @@ use tokio::process::Command;
 use std::process::Stdio;
 use serde_json::Value;
 
-/// Strip ANSI/control characters and leading/trailing Markdown code fences (e.g., ``` or ```diff) from the patch text
-// Remove ANSI escape sequences and control characters (except newline and tab).
-// Also strip leading/trailing Markdown code fences (```).
+/// Strip ANSI/control characters and leading/trailing Markdown code fences (e.g., ``` or ```diff) from the patch text.
+///
+/// Removes ANSI escape sequences and other control characters (except newline and tab),
+/// and strips leading or trailing Markdown code fences (```).
 fn strip_markdown_fences(s: &str) -> String {
     let mut filtered = String::new();
     let mut chars = s.chars().peekable();
@@ -96,8 +97,8 @@ impl CodexClient {
                     if let Some(contents) = json.get("content").and_then(Value::as_array) {
                         for item in contents {
                             if item.get("type").and_then(Value::as_str) == Some("output_text") {
-                            if let Some(text) = item.get("text").and_then(Value::as_str) {
-                                collected.push(text.to_string());
+                                if let Some(text) = item.get("text").and_then(Value::as_str) {
+                                    collected.push(text.to_string());
                                 }
                             }
                         }
@@ -203,16 +204,13 @@ impl CodexClient {
                 }
             }
         }
-        let result = if !collected.is_empty() {
-            collected.join("")
+        if !collected.is_empty() {
+            Ok(collected.join("").trim().to_string())
         } else {
-            raw
-        };
-        // Clean up any Markdown fences or control characters
-        let cleaned = strip_markdown_fences(result.trim());
-        Ok(cleaned)
+            Ok(raw.trim().to_string())
+        }
     }
-    
+
     /// Apply a unified diff patch by prompting the LLM to apply it and return updated file contents.
     pub async fn apply_patch(&self, project: &str, diff: &str) -> Result<String> {
         tracing::info!(project = project, "Codex applying patch via CLI");

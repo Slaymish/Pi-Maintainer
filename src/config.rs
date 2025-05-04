@@ -60,20 +60,19 @@ impl ConfigLoader {
             toml::from_str(&content)?
         };
 
-        // Expand tilde in cache path (e.g., "~/path" -> "/home/user/path")
+        // Expand tilde (~) to home directory in cache path and scheduler projects
         if let Some(home) = std::env::var("HOME").ok() {
             if let Some(s) = cfg.cache.path.to_str() {
                 if let Some(stripped) = s.strip_prefix("~/") {
                     cfg.cache.path = PathBuf::from(&home).join(stripped);
                 }
             }
-        }
-
-        // Expand tilde in scheduler project paths
-        if let Some(home) = std::env::var("HOME").ok() {
             for project in &mut cfg.scheduler.projects {
                 if let Some(stripped) = project.strip_prefix("~/") {
-                    *project = PathBuf::from(&home).join(stripped).to_string_lossy().into_owned();
+                    *project = PathBuf::from(&home)
+                        .join(stripped)
+                        .to_string_lossy()
+                        .into_owned();
                 }
             }
         }

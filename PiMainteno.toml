@@ -11,7 +11,8 @@ enabled = true
 cron = "0 2 * * *"
 projects = [
  "/media/hamish/pi-storage/Projects/Pi-Maintainer",
- "/media/hamish/pi-storage/Projects/health_web"
+ "/media/hamish/pi-storage/Projects/health_web",
+ "/media/hamish/pi-storage/Projects/codex/codex-rs"
 ]
 
 [systemd_monitor]
