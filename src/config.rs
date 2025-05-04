@@ -21,7 +21,6 @@ pub struct CacheConfig {
 pub struct LLMConfig {
     pub provider: String,
     pub api_key: String,
-    pub model: String,
     #[serde(flatten)]
     pub options: Option<toml::value::Table>,
 }
