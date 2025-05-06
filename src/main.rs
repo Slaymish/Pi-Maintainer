@@ -1,139 +1,35 @@
-use std::path::PathBuf;
-use clap::Parser;
-use tokio::signal;
-use tracing_subscriber::prelude::*;
-use std::sync::Arc;
-use tokio::sync::Mutex;
-
-// Initialize tracing with environment filter for log level configuration
-
-mod config;
-mod scheduler;
-mod systemd_monitor;
-mod codex_client;
-mod summarizer;
-mod patcher;
-mod cache;
-mod web_server;
-
-/// PiMainteno CLI arguments
-#[derive(Parser, Debug)]
-#[clap(name = "PiMainteno", version, about = "Self-healing code maintainer daemon")]
-struct Cli {
-    /// Path to the configuration file (TOML/JSON)
-    #[clap(short, long, value_parser = clap::value_parser!(PathBuf), default_value = "PiMainteno.toml")]
-    config: PathBuf,
-
-    /// Run a single scan & exit (no long-lived daemon)
-    #[clap(long)]
-    one_shot: bool,
-}
+use std::process::exit;
 
 #[tokio::main]
-async fn main() -> anyhow::Result<()> {
-    // 1. Parse CLI & initialize tracing
-    let args = Cli::parse();
-    // Configure tracing subscriber with environment filter and fmt layer
-    tracing_subscriber::registry()
-        .with(tracing_subscriber::EnvFilter::from_default_env())
-        .with(tracing_subscriber::fmt::layer())
-        .init();
-    tracing::info!(?args, "Starting PiMainteno");
+async fn main() {
+    let opt = cli::Opt::parse();
+    let config_path = opt
+        .config
+        .clone()
+        .unwrap_or_else(|| "PiMainteno.toml".to_owned());
 
-    // 2. Load configuration
-    let cfg = config::ConfigLoader::from_path(&args.config).await?;
-    tracing::info!(config = ?cfg, "Configuration loaded");
+    let config = match config::Config::from_file(&config_path) {
+        Ok(cfg) => cfg,
+        Err(e) => {
+            eprintln!("Failed to load config: {}", e);
+            exit(1);
+        }
+    };
 
-    // 3. Initialize shared components
-    // Use cache.path from configuration
-    let data_cache = cache::DataCache::new(&cfg.cache.path).await?;
-    let codex = codex_client::CodexClient::new(&cfg.llm);
-
-    // 4. Build domain modules
-    let summarizer = summarizer::ProjectSummarizer::new(codex.clone(), data_cache.clone());
-    let patch_gen = patcher::PatchGenerator::new(codex.clone(), data_cache.clone());
-    let patch_app = patcher::PatchApplier::new(codex.clone(), data_cache.clone());
-
-    // 5. Scheduler for periodic scans
-    // Wrap scheduler in Arc<Mutex<>> to allow manual triggers from the web UI
-    let scheduler = Arc::new(Mutex::new(
-        scheduler::Scheduler::new(
-            cfg.clone(),
-            summarizer.clone(),
-            patch_gen.clone(),
-            patch_app.clone(),
-            data_cache.clone(),
-        )
-    ));
-
-    // 6. Systemd-based failure listener
-    let mut systemd = systemd_monitor::SystemdMonitor::new(
-        cfg.clone(), patch_gen.clone(), data_cache.clone()
-    );
-
-    // 7. Web UI server
-    let webui = web_server::WebServer::new(
-        cfg.web.clone(),
-        data_cache.clone(),
-        cfg.scheduler.projects.clone(),
-        scheduler.clone(),
-    );
-
-    // 8. One-shot mode for CI or manual run
-    if args.one_shot {
-        tracing::info!("Running one-shot scan and exiting");
-        // Directly run a single scan
-        scheduler.lock().await.run_once().await?;
-        return Ok(());
+    if let Err(e) = tracing_init::init(&config) {
+        eprintln!("Failed to initialize logging: {}", e);
+        exit(1);
     }
 
-    // 9. Dispatch tasks
-    // Spawn periodic scheduler loop
-    {
-        let scheduler_loop = scheduler.clone();
-        tokio::spawn(async move {
-            use tokio::time::{sleep, Duration};
-            loop {
-                // Determine enabled state and schedule interval (in minutes)
-                let (enabled, cron_spec) = {
-                    let sched = scheduler_loop.lock().await;
-                    (sched.is_enabled(), sched.get_cron())
-                };
-                if enabled {
-                    // Run scheduler
-                    if let Err(err) = scheduler_loop.lock().await.run_once().await {
-                        tracing::error!(error = %err, "Scheduler encountered an error");
-                    }
-                    // Parse interval from cron_spec (minutes)
-                    let minutes = cron_spec.parse::<u64>().unwrap_or(1440);
-                    let interval = Duration::from_secs(minutes.saturating_mul(60));
-                    sleep(interval).await;
-                } else {
-                    // Poll periodically to check for enable toggle
-                    sleep(Duration::from_secs(60)).await;
-                }
-            }
-        });
+    if opt.one_shot {
+        if let Err(err) = run_once(&config).await {
+            eprintln!("Error in one-shot mode: {:?}", err);
+            exit(1);
+        }
+    } else {
+        if let Err(err) = start_daemon(config).await {
+            eprintln!("Error in daemon mode: {:?}", err);
+            exit(1);
+        }
     }
-
-    tokio::spawn(async move {
-        if let Err(err) = systemd.listen().await {
-            tracing::error!(error = %err, "SystemdMonitor encountered an error");
-        }
-    });
-
-    tokio::spawn(async move {
-        if let Err(err) = webui.run().await {
-            tracing::error!(error = %err, "WebServer encountered an error");
-        }
-    });
-
-    // 10. Wait for shutdown signal (Ctrl+C)
-    tracing::info!("Daemon running; press Ctrl+C to stop");
-    signal::ctrl_c().await?;
-    tracing::info!("Shutdown signal received, exiting gracefully");
-
-    // 11. (Optional) perform cleanup here
-    patch_app.shutdown().await?;
-    Ok(())
 }
