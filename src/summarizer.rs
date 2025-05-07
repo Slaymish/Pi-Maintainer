@@ -1,62 +1,39 @@
+use std::path::{Path, PathBuf};
+use std::fs;
 use crate::codex_client::CodexClient;
-use crate::cache::DataCache;
-use anyhow::Result;
-use std::path::Path;
-use tokio::fs;
-use tokio::process::Command;
-use std::process::Stdio;
+use crate::cache::Cache;
+use tracing::info;
 
-#[derive(Clone)]
-pub struct ProjectSummarizer {
-    codex: CodexClient,
-    cache: DataCache,
+pub struct Summarizer<'a> {
+    pub project_path: &'a Path,
+    pub cache: &'a Cache,
+    pub codex: &'a CodexClient,
 }
 
-impl ProjectSummarizer {
-    pub fn new(codex: CodexClient, cache: DataCache) -> Self {
-        ProjectSummarizer { codex, cache }
+impl<'a> Summarizer<'a> {
+    /// Update summary if repo HEAD changed
+    pub async fn maybe_update(&self) -> anyhow::Result<()> {
+        let head = self.get_head_hash()?;
+        if let Some(cached) = self.cache.get_summary(self.project_path, &head)? {
+            let codex_md = self.project_path.join("codex.md");
+            fs::write(&codex_md, cached)?;
+            return Ok(());
+        }
+        let summary = self.codex.summarize_repository(self.project_path).await?;
+        self.cache.set_summary(self.project_path, &head, &summary)?;
+        let codex_md = self.project_path.join("codex.md");
+        fs::write(&codex_md, summary)?;
+        Ok(())
     }
 
-    pub async fn summarize(&self, project_path: &str) -> Result<()> {
-        // Compute cache key for project summary based on Git commit hash
-        let cache_key = format!("summary_hash:{}", project_path);
-        // Attempt to get current Git HEAD hash
-        let git_hash = match Command::new("git")
-            .arg("rev-parse")
-            .arg("HEAD")
-            .current_dir(project_path)
-            .stdout(Stdio::piped())
-            .output()
-            .await
-        {
-            Ok(output) if output.status.success() => {
-                let h = String::from_utf8_lossy(&output.stdout).trim().to_string();
-                Some(h)
-            }
-            _ => {
-                tracing::warn!(project = project_path, "Could not determine Git HEAD; skipping cache check");
-                None
-            }
-        };
-        // If we have a previous hash and it matches, skip summarization
-        if let Some(ref h) = git_hash {
-            if let Ok(Some(prev)) = self.cache.get(&cache_key) {
-                if &prev == h {
-                    tracing::info!(project = project_path, "No changes since last summary, skipping");
-                    return Ok(());
-                }
-            }
+    fn get_head_hash(&self) -> anyhow::Result<String> {
+        let head_path = self.project_path.join(".git/HEAD");
+        let head = fs::read_to_string(&head_path)?;
+        if let Some(branch_ref) = head.strip_prefix("ref: ") {
+            let ref_path = self.project_path.join(".git").join(branch_ref.trim());
+            Ok(fs::read_to_string(ref_path)?.trim().to_string())
+        } else {
+            Ok(head.trim().to_string())
         }
-        // Generate new summary via Codex
-        let summary = self.codex.summarize_project(project_path).await?;
-        let path = Path::new(project_path).join("codex.md");
-        tracing::info!(path = ?path, "Writing summary to file");
-        fs::write(&path, summary).await?;
-        // Update cache with new hash
-        if let Some(h) = git_hash {
-            let _ = self.cache.insert(&cache_key, &h);
-            let _ = self.cache.flush();
-        }
-        Ok(())
     }
 }
